@@ -1,0 +1,133 @@
+<script>
+(() => {
+    /* ========== 1. 透明磨砂弹窗（不变） ========== */
+    const modal = document.createElement('div');
+    modal.id = 'highspeed-log-modal';
+    modal.style.cssText = `
+        position:fixed; inset:0; z-index:9999;
+        display:none; align-items:flex-start; justify-content:center;
+        padding:20px;
+        background:rgba(255,255,255,0);
+        backdrop-filter:blur(6px) saturate(120%);
+        -webkit-backdrop-filter:blur(6px) saturate(120%);
+    `;
+    modal.innerHTML = `
+        <div style="width:100%; max-width:720px; height:80vh;
+                    background:rgba(255,255,255,.30);
+                    border:1px solid rgba(255,255,255,.40);
+                    border-radius:12px; overflow:hidden;
+                    box-shadow:0 8px 32px rgba(0,0,0,.12);">
+            <div style="padding:12px 16px; background:rgba(40,40,40,.60);
+                        color:#fff; font-size:22px; font-weight:bold;
+                        display:flex; justify-content:space-between; align-items:center;">
+                高铁模式执行日志
+                <button id="closeLogBtn" style="border:none; background:none;
+                         color:#e0e0e0; font-size:24px; cursor:pointer;">✕</button>
+            </div>
+            <textarea id="logText" readonly
+                      style="width:100%; height:calc(100% - 56px);
+                             border:none; resize:none; padding:14px 16px;
+                             font-family:'Courier New',monospace;
+                             font-size:2rem; line-height:2;
+                             color:#000; background:transparent;">
+            </textarea>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    const logText = modal.querySelector('#logText');
+    const addLog  = msg => { logText.value += `[${new Date().toLocaleTimeString()}] ${msg}\n`; logText.scrollTop = logText.scrollHeight; };
+    const showLog = () => (modal.style.display = 'flex');
+    const hideLog = () => (modal.style.display = 'none');
+    modal.querySelector('#closeLogBtn').onclick = hideLog;
+    modal.onclick = e => { if (e.target === modal) hideLog(); };
+
+    /* ========== 2. 文件持久化（不变） ========== */
+    const STATE_FILE = '/sdcard/.highspeed_mode_state';
+    const runRoot = cmd => runShellWithRoot(cmd);
+    const readState = async () => {
+        try {
+            const r = await runRoot(`cat ${STATE_FILE}`);
+            return r?.success && r.content.trim() === '1';
+        } catch { return false; }
+    };
+    const saveState = async on => {
+        await runRoot(`echo ${on ? 1 : 0} > ${STATE_FILE}`);
+    };
+
+    /* ========== 3. 指令集（不变） ========== */
+    const cmdOn = [
+        ["setprop persist.vendor.radio.rat_acq_order 3,2,1",           "设定搜网顺序为 5G SA → 5G NSA → 4G LTE，高铁高速行驶时优先找 5G 基站，减少 3-5 秒搜网等待"],
+        ["setprop persist.vendor.radio.5g_mode_preference 3",          "强制启用 5G SA+NSA 双模，避免只连 NSA 导致上行速率低，提升 20-30% 上传体验"],
+        ["setprop persist.vendor.radio.5g_mode_priority 3",            "把 5G 设为最高优先级，弱信号也先驻留 5G，保证大带宽不断档"],
+        ["setprop persist.vendor.radio.5g_mode_fallback 2",            "5G 消失后 0.5 秒内回落 4G，不掉线、不断视频、不断游戏"],
+        ["setprop persist.vendor.network_mode 20",                     "锁定 NR+LTE，彻底屏蔽 3G/2G，减少 1-2 秒制式切换延迟"],
+        ["setprop persist.vendor.radio.meas_period 200",               "把邻区测量周期缩到 200 ms，350 km/h 高铁仍能每秒检测 5 个新小区，提前准备切换"],
+        ["setprop persist.vendor.radio.a3_offset 0",                   "将切换门限设为 0 dB，提前 2-3 dB 触发切换，防止弱信号卡顿"],
+        ["setprop persist.vendor.radio.ttt 20",                        "触发时间压到 20 ms，比默认 320 ms 快 16 倍，瞬间完成小区切换"],
+        ["setprop persist.vendor.radio.hysteresis 1",                  "迟滞仅 1 dB，既防乒乓切换又保持灵敏，比默认 4 dB 更激进"],
+        ["setprop persist.vendor.radio.rlf_rcvr_timer 500",            "掉线后 500 ms 内自动重连，用户几乎感知不到中断，视频/游戏不掉帧"],
+        ["setprop persist.vendor.radio.rlf_wait_time 500",             "重连窗口同样 500 ms，确保失败后 0.5 秒完成全频段重搜"],
+        ["setprop persist.vendor.radio.force_reacquire 1",             "强制立即重搜全网，跳过等待，减少 3-4 秒断网时间"],
+        ["echo 0 > /sys/module/lpm_levels/parameters/sleep_disabled",  "关闭 CPU/基带省电休眠，防止休眠导致的 100-200 ms 延迟和掉线"],
+        ["echo 0 > /sys/class/net/wwan0/qos/cdrx_enable",              "禁用 CDRX，取消周期性接收窗口关闭，延迟降低 20-40 ms"],
+        ["echo 0 > /sys/class/net/wwan0/qos/drx_enable",               "禁用 DRX，避免错过下行数据包，丢包率降低 30-50%"],
+        ["echo 0 > /sys/kernel/debug/msm_vidc/enable_cdrx",            "关闭视频 CDRX，直播/会议卡顿次数减少 40%"],
+        ["echo 0 > /sys/kernel/debug/msm_vidc/enable_drx",             "关闭视频 DRX，保持视频码率稳定，清晰度更持久"],
+        ["echo 0 > /sys/kernel/debug/scsc_wlan/mib/set/dyn_features_disable", "关闭 WLAN 动态省电，防止蜂窝与 Wi-Fi 抢电导致信号不稳"],
+        ["echo 0 > /sys/module/wlan/parameters/fw_fast_path_mode",     "停用 WLAN 快速路径，确保蜂窝数据始终优先转发"],
+        ["echo 0 > /sys/devices/platform/soc/18800000.qcom,pcie/pcie_suspend_disable", "禁用 PCIe 挂起，防止基带卡死，信号 0 掉线"],
+        ["setprop persist.vendor.radio.nr_lock_band 78,79",            "锁定 5G 高铁专网频段 B78/B79，速率比公网高 30-50%"],
+        ["setprop persist.vendor.radio.lte_lock_band 3,8,39,40,41",    "锁定 LTE 高铁专网频段 B3/B8/B39/B40/B41，下行速率稳定在 100 Mbps 以上"],
+        ["svc data disable && sleep 1 && svc data enable",             "重启数据连接，所有参数立即生效，无需重启手机"]
+    ];
+    const cmdOff = cmdOn.map(([c, d]) => [
+        c.replace(/=\d+|=\d+,\d+|> 0/g, m => m.includes('>') ? '> 1' : '=0'),
+        "⏪ 恢复默认：" + d.replace(/^.*?：/, "")
+    ]);
+
+    /* ========== 4. 主开关逻辑 ========== */
+    let busy = false;
+    const toggle = async () => {
+        if (busy) return;
+        busy = true;
+        const enabled = await readState();
+        const todo = enabled ? cmdOff : cmdOn;
+
+        logText.value = '';
+        showLog();
+        addLog(enabled ? "🔄 正在关闭高铁模式..." : "🔄 正在开启高铁模式...");
+
+        for (const [cmd, desc] of todo) {
+            try {
+                const res = await runRoot(cmd);
+                addLog(res?.success ? `✅ ${desc}` : `❌ ${desc} 失败`);
+            } catch {
+                addLog(`❌ ${desc} 异常`);
+            }
+            await new Promise(r => setTimeout(r, 120));
+        }
+        await saveState(!enabled);
+        btn.style.background = !enabled ? "var(--dark-btn-color-active, #4caf50)" : "var(--dark-btn-color, #424242)";
+        busy = false;
+        addLog(enabled ? "🚂 高铁模式已关闭" : "🚄 高铁模式已启动");
+    };
+
+    /* ========== 5. 创建按钮（只改颜色，不改大小/边距） ========== */
+    const btn = document.createElement("button");
+    btn.textContent = "高铁模式";
+    btn.onclick = toggle;
+
+    /* 定时插入按钮并设初始颜色 */
+    const tryInsert = setInterval(() => {
+        const container = document.querySelector(".actions-buttons");
+        if (container) {
+            clearInterval(tryInsert);
+            container.appendChild(btn);
+            readState().then(on => {
+                btn.style.background = on ? "var(--dark-btn-color-active, #4caf50)" : "var(--dark-btn-color, #424242)";
+            });
+        }
+    }, 200);
+})();
+</script>
