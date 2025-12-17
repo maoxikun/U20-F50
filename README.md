@@ -1,3 +1,5 @@
+更新插件商店
+
 **20250902 重要更新高铁模式，使用新版ufitool导入**
 
 **20250429更新version2.7.0 apk，install it in your T760 devices, then check 192.168.0.1:2333**
